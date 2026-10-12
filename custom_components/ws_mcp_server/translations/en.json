@@ -2,11 +2,10 @@
   "config": {
     "step": {
       "user": {
-        "title": "Configure Xiaozhi MCP Access Point",
-        "description": "Input WebSocket Access Point For XiaoZhi AI",
+        "title": "Connect to Xiaozhi",
+        "description": "Enter the MCP access point (WebSocket URL) from the Xiaozhi console. The URL contains a secret token, so keep it private.",
         "data": {
-          "client_endpoint": "WebSocket Access Point",
-          "name": "name",
+          "client_endpoint": "MCP access point (ws:// or wss:// URL)",
           "llm_hass_api": "[%key:common::config_flow::data::llm_hass_api%]"
         },
         "data_description": {
@@ -15,11 +14,11 @@
       }
     },
     "error": {
-      "llm_api_required": "You must choose one api at least",
-      "single_instance_allowed": "single_instance_allowed"
+      "invalid_endpoint": "Enter a valid WebSocket URL starting with ws:// or wss://.",
+      "llm_api_required": "Select at least one API."
     },
     "abort": {
-      "single_instance_allowed": "single_instance_allowed"
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
     }
   }
 }

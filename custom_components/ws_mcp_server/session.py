@@ -11,7 +11,6 @@ from dataclasses import dataclass
 import logging
 
 from anyio.streams.memory import MemoryObjectSendStream
-from mcp import types
 from mcp.shared.message import SessionMessage
 
 from homeassistant.util import ulid as ulid_util
@@ -23,19 +22,18 @@ _LOGGER = logging.getLogger(__name__)
 class Session:
     """A session for the Model Context Protocol."""
 
-    #read_stream_writer: MemoryObjectSendStream[types.JSONRPCMessage | Exception]
     read_stream_writer: MemoryObjectSendStream[SessionMessage | Exception]
 
 
 class SessionManager:
-    """Manage SSE sessions for the MCP transport layer.
+    """Manage the sessions of the MCP transport layer.
 
-    This class is used to manage the lifecycle of SSE sessions. It is responsible for
-    creating new sessions, resuming existing sessions, and closing sessions.
+    This class is used to manage the lifecycle of sessions. It is responsible for
+    creating new sessions and closing them.
     """
 
     def __init__(self) -> None:
-        """Initialize the SSE server transport."""
+        """Initialize the session manager."""
         self._sessions: dict[str, Session] = {}
 
     @asynccontextmanager
@@ -48,8 +46,7 @@ class SessionManager:
             yield session_id
         finally:
             _LOGGER.debug("Closing session: %s", session_id)
-            if session_id in self._sessions:  # close() may have already been called
-                self._sessions.pop(session_id)
+            self._sessions.pop(session_id, None)  # close() may have cleared it
 
     def get(self, session_id: str) -> Session | None:
         """Get an existing session."""
@@ -60,4 +57,3 @@ class SessionManager:
         for session in self._sessions.values():
             session.read_stream_writer.close()
         self._sessions.clear()
-

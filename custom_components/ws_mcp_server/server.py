@@ -4,6 +4,9 @@ The Model Context Protocol python sdk defines a Server API that provides the
 MCP message handling logic and error handling. The server implementation provided
 here is independent of the lower level transport protocol.
 
+This mirrors the server of Home Assistant's built-in ``mcp_server`` integration
+(2026.10) so that the exposed tools behave exactly like the core ones.
+
 See https://modelcontextprotocol.io/docs/concepts/architecture#implementation-example
 """
 
@@ -15,9 +18,8 @@ from typing import Any, cast
 from mcp import types
 from mcp.server import Server
 from mcp.server.lowlevel.helper_types import ReadResourceContents
-from probatio import to_openapi
+import probatio
 from pydantic import AnyUrl
-import voluptuous as vol
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -38,29 +40,33 @@ def _has_live_context_tool(llm_api: llm.APIInstance) -> bool:
     return any(tool.name == LIVE_CONTEXT_TOOL_NAME for tool in llm_api.tools)
 
 
-def _tool_response_data(tool_response: Any) -> Any:
-    """Return the JSON-serializable payload of a tool call response.
-
-    Older Home Assistant versions return the payload (a plain dict) directly from
-    ``APIInstance.async_call_tool``. Newer versions (2026.10+) wrap it in an
-    ``llm.ToolResult`` whose payload is in ``.data``; json.dumps cannot serialize
-    that wrapper. Support both so the integration works across versions.
-    """
-    return getattr(tool_response, "data", tool_response)
-
-
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
 ) -> types.Tool:
     """Format tool specification."""
-    input_schema = to_openapi(tool.parameters, custom_serializer=custom_serializer)
+    input_schema = probatio.to_openapi(
+        tool.parameters,
+        custom_serializer=custom_serializer,
+        openapi_version="3.1.0",
+    )
+    mcp_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": input_schema["properties"],
+    }
+    # Omitted by to_openapi when the tool has no required parameters.
+    if required := input_schema.get("required"):
+        mcp_schema["required"] = required
     return types.Tool(
         name=tool.name,
+        title=tool.title,
         description=tool.description or "",
-        inputSchema={
-            "type": "object",
-            "properties": input_schema["properties"],
-        },
+        inputSchema=mcp_schema,
+        annotations=types.ToolAnnotations(
+            readOnlyHint=tool.annotations.read_only,
+            destructiveHint=tool.annotations.destructive,
+            idempotentHint=tool.annotations.idempotent,
+            openWorldHint=tool.annotations.open_world,
+        ),
     )
 
 
@@ -144,25 +150,24 @@ async def create_server(
         tool_response = await llm_api.async_call_tool(
             llm.ToolInput(tool_name=LIVE_CONTEXT_TOOL_NAME, tool_args={})
         )
-        data = _tool_response_data(tool_response)
-        if not data.get("success"):
-            raise HomeAssistantError(cast(str, data["error"]))
+        if tool_response.error:
+            raise HomeAssistantError(cast(str, tool_response.data["error"]))
 
         return [
             ReadResourceContents(
-                content=cast(str, data["result"]),
+                content=cast(str, tool_response.data["result"]),
                 mime_type=SNAPSHOT_RESOURCE_MIME_TYPE,
             )
         ]
 
     @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
     async def list_tools() -> list[types.Tool]:
-        """List available time tools."""
+        """List the tools exposed by the selected LLM API(s)."""
         llm_api = await get_api_instance()
         return [_format_tool(tool, llm_api.custom_serializer) for tool in llm_api.tools]
 
     @server.call_tool()  # type: ignore[untyped-decorator]
-    async def call_tool(name: str, arguments: dict) -> Sequence[types.TextContent]:
+    async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
         """Handle calling tools."""
         llm_api = await get_api_instance()
         tool_input = llm.ToolInput(tool_name=name, tool_args=arguments)
@@ -170,15 +175,16 @@ async def create_server(
 
         try:
             tool_response = await llm_api.async_call_tool(tool_input)
-        except (HomeAssistantError, vol.Invalid) as e:
+        except (HomeAssistantError, probatio.Invalid) as e:
             raise HomeAssistantError(f"Error calling tool: {e}") from e
-        return [
-            types.TextContent(
-                type="text",
-                text=json.dumps(
-                    _tool_response_data(tool_response), ensure_ascii=False
-                ),
-            )
-        ]
+        return types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(tool_response.data, ensure_ascii=False),
+                )
+            ],
+            isError=tool_response.error,
+        )
 
     return server

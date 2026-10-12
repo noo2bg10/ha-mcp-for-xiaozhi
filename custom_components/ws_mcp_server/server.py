@@ -38,6 +38,17 @@ def _has_live_context_tool(llm_api: llm.APIInstance) -> bool:
     return any(tool.name == LIVE_CONTEXT_TOOL_NAME for tool in llm_api.tools)
 
 
+def _tool_response_data(tool_response: Any) -> Any:
+    """Return the JSON-serializable payload of a tool call response.
+
+    Older Home Assistant versions return the payload (a plain dict) directly from
+    ``APIInstance.async_call_tool``. Newer versions (2026.10+) wrap it in an
+    ``llm.ToolResult`` whose payload is in ``.data``; json.dumps cannot serialize
+    that wrapper. Support both so the integration works across versions.
+    """
+    return getattr(tool_response, "data", tool_response)
+
+
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
 ) -> types.Tool:
@@ -133,12 +144,13 @@ async def create_server(
         tool_response = await llm_api.async_call_tool(
             llm.ToolInput(tool_name=LIVE_CONTEXT_TOOL_NAME, tool_args={})
         )
-        if not tool_response.get("success"):
-            raise HomeAssistantError(cast(str, tool_response["error"]))
+        data = _tool_response_data(tool_response)
+        if not data.get("success"):
+            raise HomeAssistantError(cast(str, data["error"]))
 
         return [
             ReadResourceContents(
-                content=cast(str, tool_response["result"]),
+                content=cast(str, data["result"]),
                 mime_type=SNAPSHOT_RESOURCE_MIME_TYPE,
             )
         ]
@@ -163,7 +175,9 @@ async def create_server(
         return [
             types.TextContent(
                 type="text",
-                text=json.dumps(tool_response, ensure_ascii=False),
+                text=json.dumps(
+                    _tool_response_data(tool_response), ensure_ascii=False
+                ),
             )
         ]
 
